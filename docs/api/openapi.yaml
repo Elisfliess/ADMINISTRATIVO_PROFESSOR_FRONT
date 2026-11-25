@@ -1,0 +1,1469 @@
+openapi: 3.1.0
+info:
+  title: Compasso API
+  version: 1.0.0
+  description: >
+    Contrato inicial do MVP. Requisitos e regras de negócio permanecem no Notion;
+    este arquivo é a fonte oficial das rotas, schemas e respostas HTTP.
+servers:
+  - url: /api/v1
+    description: API versionada
+tags:
+  - name: Autenticação
+  - name: Usuário
+  - name: Professor
+  - name: Alunos
+  - name: Agenda
+  - name: Financeiro
+  - name: Página pública
+security:
+  - sessionCookie: []
+paths:
+  /auth/register:
+    post:
+      tags: [Autenticação]
+      summary: Cadastrar professor e iniciar verificação de e-mail
+      description: >
+        Cria a conta e os dados do professor; não libera sessão até a confirmação do e-mail.
+        Para e-mail já cadastrado, retorna exatamente o mesmo status, cabeçalhos e corpo
+        genérico, sem revelar a existência da conta; envia aviso de segurança ao titular
+        do endereço conforme D-013.
+      security: []
+      operationId: registerProfessor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '202':
+          description: Solicitação recebida; instruções serão enviadas ao endereço informado quando aplicável.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/verify-email:
+    post:
+      tags: [Autenticação]
+      summary: Confirmar endereço de e-mail
+      security: []
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 1 }
+      responses:
+        '204': { description: E-mail confirmado. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /auth/verification/resend:
+    post:
+      tags: [Autenticação]
+      summary: Solicitar novo e-mail de verificação
+      description: Resposta genérica para evitar enumeração de contas. Limites específicos devem respeitar RF47 e proteção de abuso definida para o fluxo.
+      security: []
+      operationId: resendVerificationEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        '202': { description: Solicitação recebida. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/login:
+    post:
+      tags: [Autenticação]
+      summary: Autenticar professor
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, senha]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                senha:
+                  type: string
+                  format: password
+                  minLength: 1
+                  description: Senha em texto claro. Cadastro e redefinição exigem de 8 a 72 bytes em UTF-8, com ao menos uma letra e um dígito.
+      responses:
+        '204':
+          description: Autenticado; servidor define cookie JSESSIONID e renova o cookie CSRF XSRF-TOKEN.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Conta ainda não verificada ou sem acesso.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/logout:
+    post:
+      tags: [Autenticação]
+      summary: Encerrar sessão atual
+      operationId: logout
+      responses:
+        '204': { description: Sessão invalidada no servidor. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /auth/me:
+    get:
+      tags: [Autenticação]
+      summary: Consultar identidade e estado da sessão atual
+      operationId: getCurrentSession
+      responses:
+        '200':
+          description: Usuário autenticado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/password-recovery:
+    post:
+      tags: [Autenticação]
+      summary: Solicitar recuperação de senha
+      security: []
+      operationId: requestPasswordRecovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        '202': { description: Solicitação recebida; resposta não revela existência da conta. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/password-recovery/confirm:
+    post:
+      tags: [Autenticação]
+      summary: Redefinir senha com token de uso único
+      security: []
+      operationId: confirmPasswordRecovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token, novaSenha]
+              properties:
+                token: { type: string, minLength: 1 }
+                novaSenha:
+                  type: string
+                  format: password
+                  minLength: 1
+                  description: De 8 a 72 bytes em UTF-8, com ao menos uma letra e um dígito.
+      responses:
+        '204': { description: Senha redefinida. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /account/exportacao:
+    post:
+      tags: [Usuário]
+      summary: Exportar dados da conta do professor em CSV antes do encerramento
+      description: >
+        Exige nova autenticação por senha. A exportação não encerra a conta nem invalida a sessão.
+        É permitida mesmo com o aceite legal pendente, como parte do fluxo RF35 de recusa e encerramento.
+      operationId: exportAccountCsv
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [senha]
+              properties:
+                senha: { type: string, format: password, minLength: 1 }
+      responses:
+        '200':
+          description: Arquivo CSV com os dados exportáveis da conta.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /account/encerramento:
+    post:
+      tags: [Usuário]
+      summary: Confirmar encerramento da conta do professor
+      description: >
+        Exige nova autenticação por senha e confirmação explícita. Coordena exclusão
+        ou anonimização conforme prazos de retenção e obrigações legais. Ao concluir,
+        invalida a sessão e envia e-mail de confirmação ao endereço cadastrado.
+        Também é o destino da opção "Não aceito: encerrar conta" do aceite legal e deve permanecer acessível mesmo com o aceite pendente.
+      operationId: closeAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [senha, confirmar]
+              properties:
+                senha: { type: string, format: password, minLength: 1 }
+                confirmar: { type: boolean, const: true }
+      responses:
+        '204': { description: "Conta encerrada, sessão invalidada e e-mail de confirmação solicitado após a conclusão." }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /legal/acceptances:
+    post:
+      tags: [Usuário]
+      summary: Registrar aceite dos documentos legais vigentes
+      operationId: acceptLegalDocuments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [termosVersao, politicaVersao]
+              properties:
+                termosVersao: { type: string }
+                politicaVersao: { type: string }
+      responses:
+        '204': { description: Aceites registrados com data/hora do servidor. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /professor:
+    get:
+      tags: [Professor]
+      summary: Consultar dados do professor autenticado
+      operationId: getProfessor
+      responses:
+        '200':
+          description: Dados cadastrais do professor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Professor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Professor]
+      summary: Atualizar dados do professor autenticado
+      operationId: updateProfessor
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/ProfessorPatch' }
+      responses:
+        '200':
+          description: Dados atualizados.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Professor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /alunos:
+    get:
+      tags: [Alunos]
+      summary: Listar e buscar alunos
+      operationId: listAlunos
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: nome
+          in: query
+          schema: { type: string }
+        - name: ativo
+          in: query
+          description: Filtra por situação. Quando omitido, retorna somente alunos ativos.
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Página de alunos do professor autenticado.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      content:
+                        type: array
+                        items: { $ref: '#/components/schemas/Aluno' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Alunos]
+      summary: Cadastrar aluno
+      operationId: createAluno
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlunoCreate' }
+      responses:
+        '201':
+          description: Aluno criado.
+          headers:
+            Location: { schema: { type: string, format: uri-reference } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aluno' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /alunos/{alunoId}:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    get:
+      tags: [Alunos]
+      summary: Consultar aluno
+      operationId: getAluno
+      responses:
+        '200':
+          description: Aluno encontrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aluno' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Alunos]
+      summary: Atualizar parcialmente aluno
+      description: Aplica JSON Merge Patch (RFC 7396). Propriedades omitidas preservam os valores atuais; `responsavelLegal` é mesclado campo a campo e `null` remove o responsável, respeitando RN16.
+      operationId: updateAluno
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/AlunoPatch' }
+      responses:
+        '200':
+          description: Aluno atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aluno' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /alunos/{alunoId}/historico-aulas:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    get:
+      tags: [Alunos]
+      summary: Consultar histórico de aulas do aluno
+      operationId: getAlunoAulas
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Histórico paginado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Page' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /alunos/{alunoId}/inativacao:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    post:
+      tags: [Alunos]
+      summary: Inativar aluno e aplicar efeitos associados
+      operationId: deactivateAluno
+      responses:
+        '200':
+          description: Resumo da operação concluída.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [alunoId, aulasCanceladas, cobrancasCanceladas]
+                properties:
+                  alunoId: { type: string, format: uuid }
+                  aulasCanceladas: { type: integer, minimum: 0 }
+                  cobrancasCanceladas: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /alunos/{alunoId}/inativacao/previa:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    get:
+      tags: [Alunos]
+      summary: Consultar resumo dos efeitos da inativação
+      operationId: previewAlunoDeactivation
+      responses:
+        '200':
+          description: Quantidades de aulas e cobranças afetadas, sem executar alterações.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [aulasFuturas, cobrancasPendentesCancelaveis, cobrancasPagasRelacionadas]
+                properties:
+                  aulasFuturas: { type: integer, minimum: 0 }
+                  cobrancasPendentesCancelaveis: { type: integer, minimum: 0 }
+                  cobrancasPagasRelacionadas: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /alunos/{alunoId}/reativacao:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    post:
+      tags: [Alunos]
+      summary: Reativar aluno
+      operationId: reactivateAluno
+      responses:
+        '204': { description: Aluno reativado; aulas e plano não são recriados. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /alunos/{alunoId}/exportacao:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    post:
+      tags: [Alunos]
+      summary: Exportar dados do aluno em CSV após confirmar a senha
+      operationId: exportAlunoCsv
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [senha]
+              properties:
+                senha: { type: string, format: password, minLength: 1 }
+      responses:
+        '200':
+          description: >
+            Arquivo CSV em UTF-8, com terminador de registro CRLF e escaping RFC 4180.
+            Valores que começam com `=`, `+`, `-` ou `@`, após espaços ou caracteres
+            de controle, são prefixados com apóstrofo somente no arquivo exportado
+            para evitar injeção de fórmula. O conteúdo persistido não é alterado.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /alunos/{alunoId}/anonimizacao/previa:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    get:
+      tags: [Alunos]
+      summary: Consultar resumo dos dados que serão anonimizados
+      operationId: previewAlunoAnonymization
+      responses:
+        '200':
+          description: Resumo informativo; não altera dados.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [dadosPessoais, registrosPreservados]
+                properties:
+                  dadosPessoais:
+                    type: array
+                    description: >
+                      Nomes dos campos que serão limpos ou substituídos, incluindo
+                      `responsavelLegal.informadoEm` quando houver responsável.
+                    items: { type: string }
+                  registrosPreservados:
+                    type: array
+                    description: Registros históricos mantidos após a anonimização.
+                    items: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /alunos/{alunoId}/anonimizacao:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    post:
+      tags: [Alunos]
+      summary: Confirmar anonimização manual do aluno
+      operationId: anonymizeAluno
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [senha, confirmar]
+              properties:
+                senha: { type: string, format: password, minLength: 1 }
+                confirmar: { type: boolean, const: true }
+      responses:
+        '204': { description: Dados pessoais anonimizados; registros sujeitos a retenção foram preservados. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /aulas/previa:
+    post:
+      tags: [Agenda]
+      summary: Pré-visualizar criação de aula única ou série semanal
+      description: >
+        Não persiste aulas nem cobranças. Retorna a quantidade de ocorrências e,
+        quando aplicável ao plano por aula, os valores e vencimentos previstos.
+        O POST /aulas deve recalcular e validar todas as regras antes de persistir.
+      operationId: previewAulasCreation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AulaCreate' }
+      responses:
+        '200':
+          description: Prévia sem efeitos colaterais.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AulaCreationPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /aulas:
+    get:
+      tags: [Agenda]
+      summary: Consultar aulas por intervalo e filtros
+      operationId: listAulas
+      parameters:
+        - name: inicio
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: fim
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: alunoId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/StatusAula' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Aulas no intervalo.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      content:
+                        type: array
+                        items: { $ref: '#/components/schemas/Aula' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Agenda]
+      summary: Criar uma aula ou uma série semanal
+      operationId: createAulas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AulaCreate' }
+      responses:
+        '201':
+          description: Aula ou série criada; as ocorrências resultantes são independentes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AulaCreationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /aulas/{aulaId}:
+    parameters:
+      - $ref: '#/components/parameters/AulaId'
+    get:
+      tags: [Agenda]
+      summary: Consultar aula
+      operationId: getAula
+      responses:
+        '200':
+          description: Aula encontrada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aula' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Agenda]
+      summary: Editar dados de uma aula
+      operationId: updateAula
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/AulaPatch' }
+      responses:
+        '200':
+          description: Aula atualizada; cobrança pendente vinculada é ajustada na mesma transação quando aplicável.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aula' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /aulas/{aulaId}/remarcacao:
+    parameters:
+      - $ref: '#/components/parameters/AulaId'
+    post:
+      tags: [Agenda]
+      summary: Remarcar uma aula agendada
+      operationId: rescheduleAula
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [inicioEm, fimEm]
+              properties:
+                inicioEm: { type: string, format: date-time }
+                fimEm: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Mesma aula remarcada; cobrança pendente acompanha a nova data na mesma transação.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aula' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /aulas/{aulaId}/cancelamento/previa:
+    parameters:
+      - $ref: '#/components/parameters/AulaId'
+    get:
+      tags: [Agenda]
+      summary: Pré-visualizar efeitos do cancelamento de uma aula
+      description: Não altera aula nem cobrança; informa o impacto financeiro para a confirmação do professor.
+      operationId: previewAulaCancellation
+      responses:
+        '200':
+          description: Estado da aula e impacto sobre cobrança vinculada.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [aulaId, status, cobranca]
+                properties:
+                  aulaId: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/StatusAula' }
+                  cobranca:
+                    oneOf:
+                      - type: object
+                        additionalProperties: false
+                        required: [status, valor, vencimentoEm]
+                        properties:
+                          status: { $ref: '#/components/schemas/StatusCobranca' }
+                          valor: { type: number, minimum: 0 }
+                          vencimentoEm: { type: string, format: date }
+                      - { type: 'null' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /aulas/{aulaId}/cancelamento:
+    parameters:
+      - $ref: '#/components/parameters/AulaId'
+    post:
+      tags: [Agenda]
+      summary: Cancelar definitivamente uma aula agendada
+      operationId: cancelAula
+      responses:
+        '204': { description: Aula cancelada definitivamente; cobrança pendente por aula cancelada na mesma transação. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /aulas/{aulaId}/status:
+    parameters:
+      - $ref: '#/components/parameters/AulaId'
+    patch:
+      tags: [Agenda]
+      summary: Registrar ou alterar status de dada/falta
+      operationId: updateAulaStatus
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { type: string, enum: [DADA, FALTA] }
+      responses:
+        '200':
+          description: Status atualizado; somente DADA e FALTA são aceitos. Cancelamento usa a operação específica /cancelamento e aplica os mesmos efeitos definidos no RF20/RF21.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aula' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /alunos/{alunoId}/planos:
+    parameters:
+      - $ref: '#/components/parameters/AlunoId'
+    get:
+      tags: [Financeiro]
+      summary: Consultar planos de pagamento do aluno
+      operationId: listPlanosAluno
+      responses:
+        '200':
+          description: Planos do aluno.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Plano' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Financeiro]
+      summary: Criar plano de pagamento para o aluno
+      operationId: createPlano
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanoCreate' }
+      responses:
+        '201':
+          description: Plano criado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plano' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /planos/{planoId}:
+    parameters:
+      - name: planoId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Financeiro]
+      summary: Consultar plano
+      operationId: getPlano
+      responses:
+        '200':
+          description: Plano encontrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plano' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Financeiro]
+      summary: Editar plano quando permitido pelas regras de imutabilidade
+      operationId: updatePlano
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/PlanoPatch' }
+      responses:
+        '200':
+          description: Plano atualizado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plano' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /planos/{planoId}/encerramento:
+    parameters:
+      - name: planoId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Financeiro]
+      summary: Encerrar plano
+      operationId: closePlano
+      responses:
+        '204': { description: Plano encerrado e mantido como histórico. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /cobrancas:
+    get:
+      tags: [Financeiro]
+      summary: Listar cobranças e filtrar por mês, status e aluno
+      operationId: listCobrancas
+      parameters:
+        - name: mes
+          in: query
+          description: Mês de referência YYYY-MM no fuso America/Sao_Paulo.
+          schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/StatusCobranca' }
+        - name: alunoId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Cobranças paginadas.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      content:
+                        type: array
+                        items: { $ref: '#/components/schemas/Cobranca' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /cobrancas/{cobrancaId}:
+    parameters:
+      - name: cobrancaId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Financeiro]
+      summary: Consultar cobrança
+      operationId: getCobranca
+      responses:
+        '200':
+          description: Cobrança encontrada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cobranca' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /cobrancas/{cobrancaId}/baixa:
+    parameters:
+      - name: cobrancaId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Financeiro]
+      summary: Registrar recebimento integral
+      operationId: settleCobranca
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recebidoEm]
+              properties:
+                recebidoEm: { type: string, format: date }
+                formaPagamento: { type: [string, 'null'], maxLength: 30 }
+      responses:
+        '200':
+          description: Cobrança baixada integralmente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cobranca' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /cobrancas/{cobrancaId}/cancelamento:
+    parameters:
+      - name: cobrancaId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Financeiro]
+      summary: Cancelar cobrança pendente
+      operationId: cancelCobranca
+      responses:
+        '204': { description: Cobrança cancelada; estado final e imutável. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /cobrancas/exportacao:
+    post:
+      tags: [Financeiro]
+      summary: Exportar cobranças pagas de um mês em CSV
+      operationId: exportCobrancasCsv
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mes, senha]
+              properties:
+                mes: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+                senha: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Arquivo CSV do mês, contendo somente cobranças pagas.
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /publico/{slug}:
+    get:
+      tags: [Página pública]
+      summary: Consultar página pública publicada
+      security: []
+      operationId: getPublicPage
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Conteúdo explicitamente publicado; nunca inclui dados de alunos.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicPage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /publico/{slug}/eventos:
+    post:
+      tags: [Página pública]
+      summary: Registrar evento anônimo de visita ou clique no CTA
+      security: []
+      operationId: registerPublicEvent
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tipo]
+              properties:
+                tipo: { type: string, enum: [VISITA, CLIQUE_WHATSAPP] }
+      responses:
+        '204': { description: Evento anônimo registrado sem cookies ou IP. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /publico/perfil:
+    get:
+      tags: [Página pública]
+      summary: Consultar configuração da página do professor
+      operationId: getPublicProfile
+      responses:
+        '200':
+          description: Configuração de publicação do professor autenticado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /publico/perfil/publicacao:
+    post:
+      tags: [Página pública]
+      summary: Persistir e publicar o conteúdo aprovado da página
+      description: >
+        Recebe o snapshot completo aprovado pelo professor, incluindo conteúdo editorial,
+        modalidades e canais públicos de contato. A prévia é mantida somente no frontend
+        e nunca é persistida como rascunho. A camada application coordena, em uma única
+        transação, as alterações em PERFIL_PUBLICO, MODALIDADE_AULA e nos campos de
+        contato correspondentes em PROFESSOR. Em caso de falha, tudo é revertido e a
+        publicação anterior é mantida.
+      operationId: publishPublicProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublicProfilePublicationRequest' }
+      responses:
+        '200':
+          description: Conteúdo persistido e publicado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /publico/indicadores:
+    get:
+      tags: [Página pública]
+      summary: Consultar totais anônimos de visitas e cliques
+      operationId: getPublicAnalytics
+      responses:
+        '200':
+          description: Totais agregados sem filtros temporais.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [totalVisitas, totalCliques]
+                properties:
+                  totalVisitas: { type: integer, minimum: 0 }
+                  totalCliques: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Sort:
+      name: sort
+      in: query
+      description: Campo permitido pelo endpoint e direção asc ou desc. Padrão id,asc; UUID é desempate secundário quando o campo principal difere.
+      schema: { type: string, default: 'id,asc', example: 'nome,asc' }
+    AlunoId:
+      name: alunoId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AulaId:
+      name: aulaId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details com extensões Compasso.
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [field, code, message]
+            properties:
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }
+      required: [type, title, status, code, requestId]
+    Page:
+      type: object
+      additionalProperties: false
+      required: [content, page, size, totalElements, totalPages, first, last]
+      properties:
+        content: { type: array, items: {} }
+        page: { type: integer, minimum: 0 }
+        size: { type: integer, minimum: 1, maximum: 100 }
+        totalElements: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+        first: { type: boolean }
+        last: { type: boolean }
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, emailVerificado, termosAceitos]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        emailVerificado: { type: boolean }
+        termosAceitos: { type: boolean }
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, senha, nome, razaoSocial, cnpj]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        senha:
+          type: string
+          format: password
+          minLength: 1
+          description: De 8 a 72 bytes em UTF-8, com ao menos uma letra e um dígito.
+        nome: { type: string, maxLength: 150 }
+        razaoSocial: { type: string, maxLength: 200 }
+        cnpj:
+          type: string
+          pattern: '^[0-9A-Z]{12}[0-9]{2}$'
+          description: CNPJ alfanumérico sem pontuação, com 12 caracteres (0-9 ou A-Z) e 2 dígitos verificadores.
+        emailContato: { type: [string, 'null'], format: email, maxLength: 254 }
+        telefoneContato: { type: [string, 'null'], maxLength: 30 }
+    Professor:
+      type: object
+      additionalProperties: false
+      required: [id, nome, razaoSocial, cnpj]
+      properties:
+        id: { type: string, format: uuid }
+        nome: { type: string }
+        razaoSocial: { type: string }
+        cnpj: { type: string, description: CNPJ alfanumérico sem pontuação. }
+        emailContato: { type: [string, 'null'], format: email }
+        telefoneContato: { type: [string, 'null'] }
+        instagramUrl: { type: [string, 'null'], format: uri }
+    ProfessorPatch:
+      type: object
+      description: Dados cadastrais editáveis diretamente. Canais públicos de contato são alterados somente pela operação transacional de publicação da página.
+      additionalProperties: false
+      properties:
+        nome: { type: string, maxLength: 150 }
+        razaoSocial: { type: string, maxLength: 200 }
+    ResponsavelLegal:
+      type: object
+      additionalProperties: false
+      required: [nome, contato]
+      properties:
+        nome: { type: string, maxLength: 150 }
+        contato: { type: string, maxLength: 30 }
+    ResponsavelLegalPatch:
+      description: Trecho de `responsavelLegal` em JSON Merge Patch. Campos omitidos preservam os valores atuais; `null` remove o campo, respeitando RN16.
+      type: object
+      additionalProperties: false
+      properties:
+        nome: { type: [string, 'null'], maxLength: 150 }
+        contato: { type: [string, 'null'], maxLength: 30 }
+    AlunoCreate:
+      type: object
+      additionalProperties: false
+      required: [nome, telefone, dataNascimento]
+      properties:
+        nome: { type: string, maxLength: 150 }
+        telefone: { type: string, maxLength: 30 }
+        dataNascimento: { type: string, format: date }
+        email: { type: [string, 'null'], format: email }
+        observacoes: { type: [string, 'null'] }
+        responsavelLegal:
+          oneOf:
+            - { $ref: '#/components/schemas/ResponsavelLegal' }
+            - { type: 'null' }
+    Aluno:
+      description: Dados do aluno. Após a anonimização, os campos pessoais ficam nulos e `nome` recebe o marcador `Aluno anonimizado`.
+      type: object
+      additionalProperties: false
+      required: [id, nome, ativo]
+      properties:
+        id: { type: string, format: uuid }
+        nome: { type: string, maxLength: 150 }
+        telefone: { type: [string, 'null'], maxLength: 30 }
+        email: { type: [string, 'null'], format: email }
+        dataNascimento: { type: [string, 'null'], format: date }
+        observacoes: { type: [string, 'null'] }
+        responsavelLegal:
+          oneOf:
+            - { $ref: '#/components/schemas/ResponsavelLegal' }
+            - { type: 'null' }
+        ativo: { type: boolean }
+    AlunoPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        nome: { type: string, maxLength: 150 }
+        telefone: { type: string, maxLength: 30 }
+        dataNascimento: { type: string, format: date }
+        email: { type: [string, 'null'], format: email }
+        observacoes: { type: [string, 'null'] }
+        responsavelLegal:
+          oneOf:
+            - { $ref: '#/components/schemas/ResponsavelLegalPatch' }
+            - { type: 'null' }
+    StatusAula:
+      type: string
+      enum: [AGENDADA, DADA, FALTA, CANCELADA]
+    AulaCreate:
+      type: object
+      additionalProperties: false
+      required: [alunoId, inicioEm, fimEm, modalidadeId]
+      properties:
+        alunoId: { type: string, format: uuid }
+        modalidadeId: { type: string, format: uuid }
+        inicioEm: { type: string, format: date-time }
+        fimEm: { type: string, format: date-time }
+        observacoes: { type: [string, 'null'] }
+        repetirSemanalmente:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [ate]
+          properties:
+            ate: { type: string, format: date }
+    Aula:
+      type: object
+      additionalProperties: false
+      required: [id, alunoId, modalidadeId, inicioEm, fimEm, status]
+      properties:
+        id: { type: string, format: uuid }
+        alunoId: { type: string, format: uuid }
+        modalidadeId: { type: string, format: uuid }
+        inicioEm: { type: string, format: date-time }
+        fimEm: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/StatusAula' }
+        observacoes: { type: [string, 'null'] }
+    AulaPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        modalidadeId: { type: string, format: uuid }
+        inicioEm: { type: string, format: date-time }
+        fimEm: { type: string, format: date-time }
+        observacoes: { type: [string, 'null'] }
+    AulaCreationPreview:
+      type: object
+      additionalProperties: false
+      required: [totalAulas, totalCobrancasPrevistas, cobrancasPrevistas]
+      properties:
+        totalAulas: { type: integer, minimum: 1 }
+        totalCobrancasPrevistas: { type: integer, minimum: 0 }
+        cobrancasPrevistas:
+          type: array
+          description: Vazia quando o aluno não utiliza plano por aula.
+          items:
+            type: object
+            additionalProperties: false
+            required: [inicioEm, valor, vencimentoEm]
+            properties:
+              inicioEm: { type: string, format: date-time }
+              valor: { type: number, minimum: 0 }
+              vencimentoEm: { type: string, format: date }
+    AulaCreationResult:
+      type: object
+      additionalProperties: false
+      required: [aulas, totalCriadas, totalCobrancasPrevistas]
+      properties:
+        aulas:
+          type: array
+          items: { $ref: '#/components/schemas/Aula' }
+        totalCriadas: { type: integer, minimum: 1 }
+        totalCobrancasPrevistas: { type: integer, minimum: 0 }
+    PeriodicidadePlano:
+      type: string
+      enum: [MENSAL, POR_AULA]
+    PlanoCreate:
+      type: object
+      additionalProperties: false
+      required: [periodicidade, valor, inicioEm]
+      properties:
+        periodicidade: { $ref: '#/components/schemas/PeriodicidadePlano' }
+        valor: { type: number, minimum: 0 }
+        inicioEm: { type: string, format: date }
+        diaVencimento: { type: [integer, 'null'], minimum: 1, maximum: 28 }
+        prazoVencimentoDias: { type: [integer, 'null'], minimum: 0 }
+    Plano:
+      allOf:
+        - $ref: '#/components/schemas/PlanoCreate'
+        - type: object
+          required: [id, status]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [ATIVO, ENCERRADO] }
+            encerradoEm: { type: [string, 'null'], format: date }
+    PlanoPatch:
+      type: object
+      description: >
+        Permitido somente enquanto o plano estiver ativo e ainda não tiver gerado
+        nenhuma cobrança. Após a primeira cobrança, inclusive cancelada, todos
+        estes campos ficam imutáveis.
+      additionalProperties: false
+      properties:
+        periodicidade: { $ref: '#/components/schemas/PeriodicidadePlano' }
+        valor: { type: number, minimum: 0 }
+        inicioEm: { type: string, format: date }
+        diaVencimento: { type: [integer, 'null'], minimum: 1, maximum: 28 }
+        prazoVencimentoDias: { type: [integer, 'null'], minimum: 0 }
+    StatusCobranca:
+      type: string
+      enum: [PENDENTE, PAGO, CANCELADO]
+    Cobranca:
+      type: object
+      additionalProperties: false
+      required: [id, alunoId, planoId, aulaId, valor, periodoInicio, periodoFim, vencimentoEm, status, recebidoEm, formaPagamento]
+      properties:
+        id: { type: string, format: uuid }
+        alunoId: { type: string, format: uuid }
+        planoId: { type: string, format: uuid }
+        aulaId: { type: [string, 'null'], format: uuid }
+        valor: { type: number, minimum: 0 }
+        periodoInicio: { type: [string, 'null'], format: date }
+        periodoFim: { type: [string, 'null'], format: date }
+        vencimentoEm: { type: string, format: date }
+        status: { $ref: '#/components/schemas/StatusCobranca' }
+        situacao: { type: string, enum: [PENDENTE, EM_ATRASO, PAGO, CANCELADO] }
+        recebidoEm: { type: [string, 'null'], format: date }
+        formaPagamento: { type: [string, 'null'], maxLength: 30 }
+    PublicPage:
+      type: object
+      description: DTO público composto de PROFESSOR, PERFIL_PUBLICO e modalidades MODALIDADE_AULA publicadas. Nunca serializar as entidades diretamente.
+      additionalProperties: false
+      required: [nome, razaoSocial, cnpj, titulo, apresentacao, modalidades, mostrarValores, publicado, emailContato, telefoneContato, instagramUrl, whatsappNumero, whatsappMensagem]
+      properties:
+        nome: { type: string }
+        razaoSocial: { type: string }
+        cnpj: { type: string, minLength: 14, maxLength: 14 }
+        titulo: { type: [string, 'null'] }
+        apresentacao: { type: [string, 'null'] }
+        modalidades:
+          type: array
+          items: { $ref: '#/components/schemas/ModalidadePublicada' }
+        mostrarValores: { type: boolean }
+        publicado: { type: boolean, const: true }
+        emailContato: { type: [string, 'null'], format: email }
+        telefoneContato: { type: [string, 'null'] }
+        instagramUrl: { type: [string, 'null'], format: uri }
+        whatsappNumero: { type: [string, 'null'], maxLength: 20 }
+        whatsappMensagem: { type: [string, 'null'], maxLength: 500 }
+    PublicProfile:
+      type: object
+      additionalProperties: false
+      required: [id, slug, titulo, apresentacao, whatsappNumero, whatsappMensagem, mostrarValores, publicado, emailContato, telefoneContato, instagramUrl, modalidades]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, minLength: 1, maxLength: 120 }
+        titulo: { type: [string, 'null'], maxLength: 150 }
+        apresentacao: { type: [string, 'null'] }
+        whatsappNumero: { type: [string, 'null'], maxLength: 20, pattern: '^[0-9]+$' }
+        whatsappMensagem: { type: [string, 'null'], maxLength: 500 }
+        mostrarValores: { type: boolean }
+        publicado: { type: boolean }
+        publicadoEm: { type: [string, 'null'], format: date-time }
+        emailContato: { type: [string, 'null'], format: email }
+        telefoneContato: { type: [string, 'null'], maxLength: 30 }
+        instagramUrl: { type: [string, 'null'], format: uri }
+        modalidades:
+          type: array
+          items: { $ref: '#/components/schemas/ModalidadePublica' }
+    PublicProfilePublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [slug, titulo, apresentacao, whatsappNumero, whatsappMensagem, mostrarValores, emailContato, telefoneContato, instagramUrl, modalidades]
+      properties:
+        slug: { type: string, minLength: 1, maxLength: 120 }
+        titulo: { type: [string, 'null'], maxLength: 150 }
+        apresentacao: { type: [string, 'null'] }
+        whatsappNumero: { type: [string, 'null'], maxLength: 20, pattern: '^[0-9]+$' }
+        whatsappMensagem: { type: [string, 'null'], maxLength: 500 }
+        mostrarValores: { type: boolean }
+        emailContato: { type: [string, 'null'], format: email }
+        telefoneContato: { type: [string, 'null'], maxLength: 30 }
+        instagramUrl: { type: [string, 'null'], format: uri }
+        modalidades:
+          description: Snapshot completo das modalidades gerenciadas no editor. IDs identificam registros existentes; sem ID cria modalidade. Modalidades existentes omitidas são despublicadas, não excluídas fisicamente.
+          type: array
+          items: { $ref: '#/components/schemas/ModalidadePublicacao' }
+    ModalidadePublicada:
+      type: object
+      description: Quando mostrarValores=false no perfil, valor e valorAtualizadoEm são retornados como null e não devem ser exibidos.
+      additionalProperties: false
+      required: [id, nome, formato, descricao, valor, valorAtualizadoEm, duracaoMinutos, publicada]
+      properties:
+        id: { type: string, format: uuid }
+        nome: { type: string, maxLength: 100 }
+        formato: { type: string, enum: [INDIVIDUAL, GRUPO, PERSONALIZADO] }
+        descricao: { type: [string, 'null'] }
+        valor: { type: [number, 'null'], minimum: 0 }
+        valorAtualizadoEm: { type: [string, 'null'], format: date-time }
+        duracaoMinutos: { type: [integer, 'null'], minimum: 1 }
+        publicada: { type: boolean }
+    ModalidadePublica:
+      allOf:
+        - $ref: '#/components/schemas/ModalidadePublicada'
+    ModalidadePublicacao:
+      type: object
+      additionalProperties: false
+      required: [nome, formato, descricao, valor, duracaoMinutos, publicada]
+      properties:
+        id: { type: string, format: uuid, description: ID da modalidade existente; ausente para uma modalidade nova. }
+        nome: { type: string, minLength: 1, maxLength: 100 }
+        formato: { type: string, enum: [INDIVIDUAL, GRUPO, PERSONALIZADO] }
+        descricao: { type: [string, 'null'] }
+        valor: { type: [number, 'null'], minimum: 0 }
+        duracaoMinutos: { type: [integer, 'null'], minimum: 1 }
+        publicada: { type: boolean }
+  responses:
+    BadRequest:
+      description: Entrada inválida, JSON malformado ou propriedade desconhecida.
+      headers:
+        X-Request-Id: { schema: { type: string, format: uuid } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Sessão ausente ou expirada.
+      headers:
+        X-Request-Id: { schema: { type: string, format: uuid } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Sessão válida, mas operação não permitida.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Recurso inexistente ou pertencente a outro professor.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Conflito com o estado atual ou regra de negócio.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Limite específico do fluxo excedido.
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
